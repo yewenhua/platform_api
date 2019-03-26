@@ -89,19 +89,24 @@ class WxpayService
      * @param $openid
      * @param $type  JSAPI NATIVE
      */
-    public function prepay($orderid, $openid, $type, $fee) {
+    public function prepay($params) {
         $this->publicPayParameters = array();
         $this->setPayParameters('appid', config('wxpay.appid'));//公众账号ID
         $this->setPayParameters('mch_id', config('wxpay.mchid'));//商户号
         $this->setPayParameters('nonce_str', $this->createNoncestr());//随机字符串
 
         $this->setPayParameters('spbill_create_ip', $this->get_client_ip());
-        $this->setPayParameters('openid', $openid);  //trade_type 为 JSAPI 时，此参数必传
+        if($params['trade_type'] == 'JSAPI') {
+            $this->setPayParameters('openid', $params['openid']);  //trade_type 为 JSAPI 时，此参数必传
+        }
+        elseif($params['trade_type'] == 'NATIVE'){
+            $this->setPayParameters('product_id', $params['product_id']);  //trade_type 为 NATIVE 时，此参数必传
+        }
         $this->setPayParameters('body', 'pay goods'); //商品描述
-        $this->setPayParameters('out_trade_no', $orderid);
-        $this->setPayParameters('total_fee', $fee);  //订单总金额，单位为分，不 能带小数点
+        $this->setPayParameters('out_trade_no', $params['orderid']);
+        $this->setPayParameters('total_fee', $params['total_fee']);  //订单总金额，单位为分，不 能带小数点
         $this->setPayParameters('notify_url', $this->notify_url);
-        $this->setPayParameters('trade_type', $type);
+        $this->setPayParameters('trade_type', $params['trade_type']);
         $this->publicPayParameters["sign"] = $this->getSign($this->publicPayParameters);//签名
         $xml = $this->arrayToXml($this->publicPayParameters);
         Log::info('prepay param:'.$xml);
@@ -109,8 +114,13 @@ class WxpayService
         $this->response = $this->postXmlCurlNew($xml, $this->prepay_url, $this->curl_timeout);
         $this->result = $this->xmlToArray($this->response);
         Log::info('prepay result:'.var_export($this->result, true));
-        if(isset($this->result["prepay_id"])){
-            return $this->result;
+        if($this->result['return_code'] && $this->result['return_code'] == 'SUCCESS' && $this->result['result_code'] && $this->result['result_code'] == 'SUCCESS'){
+            if($this->checkSign($this->result) && isset($this->result["prepay_id"])){
+                return $this->result;
+            }
+            else{
+                return null;
+            }
         }
         else{
             return null;
@@ -130,24 +140,25 @@ class WxpayService
         $callbackData = $this->xmlToArray($postXML);
         Log::info('notify callback param:'.var_export($callbackData, true));
         $status = '';
-        if($this->checkSign($callbackData) != FALSE){
-            if(isset($callbackData['return_code']) && $callbackData['return_code'] == 'SUCCESS' && isset($callbackData['result_code']) && $callbackData['result_code'] == 'SUCCESS')
-            {
-                $this->setReturnParameters("return_code","SUCCESS");   //返回状态码
-                $this->setReturnParameters("return_msg","OK");
+        if(isset($callbackData['return_code']) && $callbackData['return_code'] == 'SUCCESS' && isset($callbackData['result_code']) && $callbackData['result_code'] == 'SUCCESS')
+        {
+            if($this->checkSign($callbackData) != FALSE) {
+                $this->setReturnParameters("return_code", "SUCCESS");   //返回状态码
+                $this->setReturnParameters("return_msg", "OK");
                 $status = 'success';
             }
             else{
-                $this->setReturnParameters("return_code","FAIL");   //返回状态码
+                $this->setReturnParameters("return_code","签名失败");
                 $this->setReturnParameters("return_msg","ERROR");
-                $status = 'fail';
+                $status = 'sign_error';
             }
         }
         else{
-            $this->setReturnParameters("return_code","签名失败");
+            $this->setReturnParameters("return_code","FAIL");   //返回状态码
             $this->setReturnParameters("return_msg","ERROR");
-            $status = 'sign_error';
+            $status = 'fail';
         }
+
         $xml = $this->arrayToXml($this->returnParameters);
 
         return array('status'=>$status, 'callback'=>$callbackData, 'xml'=>$xml);
@@ -428,13 +439,18 @@ class WxpayService
         $callbackData = $this->xmlToArray($postXML);
         if($this->checkSign($callbackData) != FALSE){
             $product_id = $callbackData['product_id'];
-            $openid = $callbackData['openid'];
-            $type = 'NATIVE';
-            $rtn = $this->prepay($openid, $type);
+            $orderid = '';
+            $total_fee = 1;
+            $params = array(
+                'orderid'=>$orderid,
+                'total_fee'=>$total_fee,
+                'trade_type'=>'NATIVE',
+                'product_id'=>$product_id,
+            );
+            $rtn = $this->prepay($params);
             if($rtn != null){
                 $prepay_id = $rtn["prepay_id"];
                 $nonce_str = $callbackData['nonce_str'];
-                $sign = $callbackData['sign'];
 
                 $this->setReturnParameters("return_code","SUCCESS");   //返回状态码
                 $this->setReturnParameters("result_code","SUCCESS");   //业务结果
@@ -442,6 +458,7 @@ class WxpayService
                 $this->setReturnParameters('appid', config('wxpay.appid'));
                 $this->setReturnParameters('mch_id', config('wxpay.mchid'));
                 $this->setReturnParameters("nonce_str","$nonce_str");  //微信返回的随机字符串
+                $sign = $this->getSign($this->returnParameters);
                 $this->setReturnParameters("sign","$sign");  //返回数据签名
             }
             else{
@@ -454,28 +471,7 @@ class WxpayService
             $this->setReturnParameters("return_msg","签名失败");//返回信息
         }
         $xml = arrayToXml($this->returnParameters);
-        echo $xml;
-    }
-
-    /**
-     * 扫码支付--模式二
-     * 根据已生成订单二维码直接支付，扫码本身不生成订单
-     */
-    public function native_dynamic_qrcode() {
-        $code_url = null;
-        $this->returnParameters = array();
-        $postXML      = $GLOBALS['HTTP_RAW_POST_DATA'];
-        $callbackData = $this->xmlToArray($postXML);
-        if($this->checkSign($callbackData) != FALSE){
-            $product_id = $callbackData['product_id'];
-            $openid = $callbackData['openid'];
-            $type = 'NATIVE';
-            $rtn = $this->prepay($openid, $type);
-            if($rtn != null){
-                $code_url = $rtn['code_url'];
-            }
-        }
-        return $code_url;
+        return $xml;
     }
 
     /**
