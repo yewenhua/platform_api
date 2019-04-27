@@ -11,7 +11,6 @@ use App\Order;
 use App\Role;
 use Illuminate\Support\Facades\DB;
 use App\Http\Models\Cashlog;
-use App\Http\Models\Member;
 
 class AdminController extends Controller
 {
@@ -46,7 +45,7 @@ class AdminController extends Controller
 
         if ($users) {
             foreach ($users as $key=>$item) {
-                $mem_num = Member::select(['id'])->where('uid', $item->id)->count();
+                $mem_num = 0;
                 $roles = $item->roles;
                 $users[$key]->mem_num = $mem_num;
                 if($roles && count($roles) > 0) {

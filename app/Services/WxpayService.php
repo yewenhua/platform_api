@@ -393,8 +393,13 @@ class WxpayService
         $xml = $this->arrayToXml($this->publicPayParameters);
         $this->response = $this->postXmlCurl($xml, $url, $this->curl_timeout);
         $this->result = $this->xmlToArray($this->response);
-        if(isset($this->result["short_url"])){
-            return $this->result["short_url"];
+        if(isset($this->result['return_code']) && $this->result['return_code'] == 'SUCCESS' && isset($this->result['result_code']) && $this->result['result_code'] == 'SUCCESS') {
+            if ($this->checkSign($this->result) != FALSE && isset($this->result["short_url"])) {
+                return $this->result["short_url"];
+            }
+            else{
+                return null;
+            }
         }
         else{
             return null;
